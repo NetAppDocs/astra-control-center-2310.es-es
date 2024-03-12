@@ -1,0 +1,330 @@
+---
+sidebar: sidebar 
+permalink: use/replicate_snapmirror.html 
+keywords: replicate, replication, disaster, recovery 
+summary: Astra puede restaurar la configuración de sus aplicaciones y el almacenamiento persistente a partir de una copia Snapshot o una copia de seguridad. Los backups de almacenamiento persistente se transfieren desde su almacén de objetos, de modo que la restauración a partir de un backup existente se completa lo más rápido. 
+---
+= Replicar aplicaciones entre back-ends de almacenamiento mediante la tecnología SnapMirror
+:hardbreaks:
+:allow-uri-read: 
+:icons: font
+:imagesdir: ../media/use/
+
+
+[role="lead"]
+Con Astra Control, puede aumentar la continuidad del negocio para sus aplicaciones con un objetivo de punto de recuperación (RPO) y un objetivo de tiempo de recuperación bajo (Recovery Time Objective) mediante funcionalidades de replicación asíncrona de la tecnología SnapMirror de NetApp. Una vez configurado, esto permite a sus aplicaciones replicar los cambios de aplicaciones y datos de un back-end de almacenamiento a otro, en el mismo clúster o entre diferentes clústeres.
+
+Si quiere ver una comparación entre backups/restauraciones y replicación, consulte link:../concepts/data-protection.html["Conceptos de protección de datos"].
+
+Puede replicar aplicaciones en diferentes situaciones, como las siguientes situaciones de solo en las instalaciones, de cloud híbrido y multicloud:
+
+* Sitio local A a sitio local A
+* En el sitio Local A al sitio local B
+* Del entorno local al cloud con Cloud Volumes ONTAP
+* Cloud con Cloud Volumes ONTAP para infraestructura en las instalaciones
+* Cloud con Cloud Volumes ONTAP al cloud (entre distintas regiones del mismo proveedor de cloud o a distintos proveedores de cloud)
+
+
+Astra Control puede replicar aplicaciones en clústeres locales, de las instalaciones al cloud (mediante Cloud Volumes ONTAP) o entre clouds (Cloud Volumes ONTAP a Cloud Volumes ONTAP).
+
+
+NOTE: Puede replicar simultáneamente una aplicación diferente en la dirección opuesta. Por ejemplo, las aplicaciones A, B, C se pueden replicar del centro de datos 1 al centro de datos 2 y las aplicaciones X, y y, Z se pueden replicar del centro de datos 2 al centro de datos 1.
+
+Con Astra Control, puede realizar las siguientes tareas relacionadas con la replicación de aplicaciones:
+
+* <<Configurar una relación de replicación>>
+* <<Ponga una aplicación replicada en línea en el clúster de destino (conmutación por error)>>
+* <<Se ha producido un error al sincronizar una replicación>>
+* <<Replicación de aplicaciones inversa>>
+* <<Conmutación tras error de las aplicaciones al clúster de origen original>>
+* <<Eliminar una relación de replicación de aplicaciones>>
+
+
+
+
+== Requisitos previos de replicación
+
+La replicación de aplicaciones de Astra Control requiere que se cumplan los siguientes requisitos previos antes de empezar:
+
+.Clústeres ONTAP
+* *Astra Trident*: Astra Trident versión 22,10 o posterior debe existir en los clústeres de Kubernetes de origen y destino que utilicen ONTAP como backend. Astra Control admite la replicación con la tecnología SnapMirror de NetApp mediante clases de almacenamiento respaldadas por los siguientes controladores:
++
+** `ontap-nas`
+** `ontap-san`
+
+
+* *Licencias*: Las licencias asíncronas de SnapMirror de ONTAP que utilizan el paquete de protección de datos deben estar habilitadas en los clústeres de ONTAP de origen y de destino. Consulte https://docs.netapp.com/us-en/ontap/data-protection/snapmirror-licensing-concept.html["Información general sobre las licencias de SnapMirror en ONTAP"^] si quiere más información.
+
+
+.Interconexión
+* *Cluster y SVM*: Los back-ends de almacenamiento ONTAP deben ser peered. Consulte https://docs.netapp.com/us-en/ontap-sm-classic/peering/index.html["Información general sobre relaciones entre iguales de clústeres y SVM"^] si quiere más información.
++
+
+IMPORTANT: Compruebe que los nombres de las SVM utilizados en la relación de replicación entre dos clústeres de ONTAP sean únicos.
+
+* *Astra Trident y SVM*: Las SVM remotas entre iguales deben estar disponibles para Astra Trident en el clúster de destino.
+
+
+.Astra Control Center
+* *Backends administrados*: Necesitas agregar y administrar backends de almacenamiento de ONTAP en el Centro de control de Astra para crear una relación de replicación.
++
+Solo para el aprovisionador de control de Astra_*: Agregar y administrar los back-ends de almacenamiento de ONTAP en el Centro de control de Astra es opcional si has habilitado el aprovisionador de control de Astra para el Centro de control de Astra 23,10 o posterior.
+
+* *Clusters administrados*: Agregue y administre los siguientes clusters con Astra Control, idealmente en diferentes dominios o sitios de falla:
++
+** Clúster de Kubernetes de origen
+** Clúster de Kubernetes de destino
+** Clústeres de ONTAP asociados
+
+
+* *Cuentas de usuario*: Cuando añades un backend de almacenamiento de ONTAP al Centro de control de Astra, aplica las credenciales de usuario con el rol “admin”. Este rol tiene métodos de acceso `http` y.. `ontapi` Se habilitó en los clústeres de origen y destino de ONTAP. Consulte https://docs.netapp.com/us-en/ontap-sm-classic/online-help-96-97/concept_cluster_user_accounts.html#users-list["Gestionar cuentas de usuario en la documentación de ONTAP"^] si quiere más información.
++
+*_Solo para el aprovisionador de control de Astra_*: Si has habilitado la funcionalidad de aprovisionamiento de Astra Control, ya no necesitas definir específicamente un rol de administrador para gestionar los clústeres en Astra Control Center, ya que estas credenciales ya no son necesarias en Astra Control Center.
+
+
+
+
+TIP: link:../get-started/install_acc.html["Pon en marcha Astra Control Center"^] en un tercer dominio de fallo o centro secundario para proporcionar una recuperación ante desastres sin problemas.
+
+
+NOTE: Astra Control Center no admite la replicación de SnapMirror de NetApp para back-ends de almacenamiento que utilizan el protocolo NVMe over TCP.
+
+.Configuración de Astra Trident/ONTAP
+Astra Control Center requiere que configure al menos un back-end de almacenamiento que admita replicación para los clústeres de origen y destino. Si los clústeres de origen y destino son los mismos, la aplicación de destino debe usar un back-end de almacenamiento diferente al de la aplicación de origen para obtener la mejor resiliencia.
+
+
+IMPORTANT: La replicación de Astra Control admite aplicaciones que utilicen una única clase de almacenamiento. Al agregar una aplicación a un espacio de nombres, asegúrese de que la aplicación tenga la misma clase de almacenamiento que otras aplicaciones del espacio de nombres. Cuando agregue una RVP a una aplicación replicada, asegúrese de que la nueva RVP tenga la misma clase de almacenamiento que otras RVP del espacio de nombres.
+
+
+
+== Configurar una relación de replicación
+
+La configuración de una relación de replicación implica lo siguiente:
+
+* Selección de la frecuencia con la que quieres que Astra Control tome una instantánea de una aplicación (que incluye los recursos de Kubernetes de la aplicación, así como las instantáneas de volumen de cada uno de los volúmenes de la aplicación)
+* Elegir la programación de replicación (se incluyen recursos de Kubernetes, así como datos de volúmenes persistentes)
+* Establecer la hora para que se realice la snapshot
+
+
+.Pasos
+. En la navegación izquierda de Astra Control, seleccione *aplicaciones*.
+. Seleccione la pestaña *Protección de datos* > *Replicación*.
+. Seleccione *Configurar política de replicación*. O bien, en el cuadro Protección de aplicaciones, seleccione la opción acciones y seleccione *Configurar directiva de replicación*.
+. Introduzca o seleccione la siguiente información:
++
+** *Cluster de destino*: Introduzca un cluster de destino (puede ser el mismo que el cluster de origen).
+** *Clase de almacenamiento de destino*: Seleccione o introduzca la clase de almacenamiento que utiliza la SVM con pares en el clúster de ONTAP de destino. Como práctica recomendada, la clase de almacenamiento de destino debe apuntar a un back-end de almacenamiento distinto al de la clase de almacenamiento de origen.
+** *Tipo de replicación*: `Asynchronous` actualmente es el único tipo de replicación disponible.
+** *Espacio de nombres de destino*: Introduzca espacios de nombres de destino nuevos o existentes para el clúster de destino.
+** (Opcional) Añada espacios de nombres adicionales seleccionando *Agregar espacio de nombres* y eligiendo el espacio de nombres en la lista desplegable.
+** *Frecuencia de replicación*: Establece la frecuencia con la que quieres que Astra Control tome una instantánea y la replique en el destino.
+** *Offset*: Establece el número de minutos desde la parte superior de la hora en que quieres que Astra Control tome una instantánea. Es posible que desee utilizar un offset para no coincidir con otras operaciones programadas.
++
+
+TIP: Reajuste los programas de copia de seguridad y replicación para evitar superposiciones de programas. Por ejemplo, realice backups en la parte superior de la hora cada hora y programe la replicación para que comience con un desplazamiento de 5 minutos y un intervalo de 10 minutos.
+
+
+
+. Seleccione *Siguiente*, revise el resumen y seleccione *Guardar*.
++
+
+NOTE: Al principio, el estado muestra "app-mirror" antes de que se produzca la primera programación.
+
++
+Astra Control crea una snapshot de aplicación utilizada para la replicación.
+
+. Para ver el estado de la instantánea de la aplicación, seleccione la pestaña *Aplicaciones* > *Snapshots*.
++
+El nombre de la snapshot usa el formato de `replication-schedule-<string>`. Astra Control conserva la última snapshot utilizada para la replicación. Cualquier instantánea de replicación más antigua se elimina una vez que la replicación se completa correctamente.
+
+
+
+.Resultado
+De este modo se crea la relación de replicación.
+
+Astra Control realiza las siguientes acciones como resultado de establecer la relación:
+
+* Crea un espacio de nombres en el destino (si no existe).
+* Crea un PVC en el espacio de nombres de destino correspondiente a las RVP de la aplicación de origen.
+* Realiza una instantánea inicial coherente con las aplicaciones.
+* Establece la relación de SnapMirror para volúmenes persistentes mediante la snapshot inicial.
+
+
+La página *Protección de datos* muestra el estado y el estado de la relación de replicación:
+<Health status> | <Relationship life cycle state>
+
+Por ejemplo:
+Normal | Establecido
+
+Obtenga más información acerca de los estados y el estado de replicación al final de este tema.
+
+
+
+== Ponga una aplicación replicada en línea en el clúster de destino (conmutación por error)
+
+Mediante Astra Control, puede conmutar al respaldo las aplicaciones replicadas en un clúster de destino. Este procedimiento detiene la relación de replicación y conecta la aplicación en el clúster de destino. Este procedimiento no detiene la aplicación en el clúster de origen si estaba operativa.
+
+.Pasos
+. En la navegación izquierda de Astra Control, seleccione *aplicaciones*.
+. Seleccione la pestaña *Protección de datos* > *Replicación*.
+. En el menú Acciones, seleccione *Error*.
+. En la página de conmutación por error, revise la información y seleccione *failover*.
+
+
+.Resultado
+Las siguientes acciones se producen como resultado del procedimiento de failover:
+
+* La aplicación de destino se inicia en función de la última instantánea replicada.
+* El clúster de origen y la aplicación (si están operativas) no se han detenido y se seguirá ejecutando.
+* El estado de replicación cambia a "recuperación tras fallos" y luego a "recuperación tras fallos" cuando ha finalizado.
+* La política de protección de la aplicación de origen se copia en la aplicación de destino según los horarios presentes en la aplicación de origen en el momento de la conmutación por error.
+* Si la aplicación de origen tiene uno o más ganchos de ejecución posteriores a la restauración habilitados, esos ganchos de ejecución se ejecutan para la aplicación de destino.
+* Astra Control muestra la aplicación tanto en los clústeres de origen como de destino y su estado respectivo.
+
+
+
+
+== Se ha producido un error al sincronizar una replicación
+
+La operación de resincronización vuelve a establecer la relación de replicación. Puede elegir el origen de la relación para conservar los datos en el clúster de origen o de destino. Esta operación vuelve a establecer las relaciones de SnapMirror para iniciar la replicación de volúmenes en la dirección que se desee.
+
+El proceso detiene la aplicación en el nuevo clúster de destino antes de volver a establecer la replicación.
+
+
+NOTE: Durante el proceso de resincronización, el estado del ciclo de vida muestra como "establecer".
+
+.Pasos
+. En la navegación izquierda de Astra Control, seleccione *aplicaciones*.
+. Seleccione la pestaña *Protección de datos* > *Replicación*.
+. En el menú Acciones, selecciona *Resincronizar*.
+. En la página Resync, seleccione la instancia de aplicación de origen o de destino que contenga los datos que desea conservar.
++
+
+CAUTION: Elija el origen de resincronización con cuidado, ya que los datos del destino se sobrescribirán.
+
+. Seleccione *Resync* para continuar.
+. Escriba "Resync" para confirmar.
+. Seleccione *Sí, resincronización* para finalizar.
+
+
+.Resultado
+* La página Replication muestra el estado de "establecimiento".
+* Astra Control detiene la aplicación en el nuevo clúster de destino.
+* Astra Control vuelve a establecer la replicación de volúmenes persistentes en la dirección seleccionada mediante la resincronización de SnapMirror.
+* La página Replication muestra la relación actualizada.
+
+
+
+
+== Replicación de aplicaciones inversa
+
+Esta es la operación planificada para mover la aplicación al back-end del almacenamiento de destino y continuar replicando de nuevo al back-end del almacenamiento de origen original. Astra Control detiene la aplicación de origen y replica los datos en el destino antes de conmutar por error a la aplicación de destino.
+
+En esta situación, está intercambiando el origen y el destino.
+
+.Pasos
+. En la navegación izquierda de Astra Control, seleccione *aplicaciones*.
+. Seleccione la pestaña *Protección de datos* > *Replicación*.
+. En el menú Acciones, seleccione *Replicación inversa*.
+. En la página replicación inversa, revise la información y seleccione *replicación inversa* para continuar.
+
+
+.Resultado
+Las siguientes acciones ocurren como resultado de la replicación inversa:
+
+* Se toma una instantánea de los recursos de Kubernetes de la aplicación de origen original.
+* Los pods de la aplicación de origen originales se detienen con dignidad al eliminar los recursos de Kubernetes de la aplicación (dejando las RVP y los VP en funcionamiento).
+* Después de que los pods se cierran, se toman y replican instantáneas de los volúmenes de la aplicación.
+* Las relaciones de SnapMirror se rompen, lo que hace que los volúmenes de destino estén listos para la lectura/escritura.
+* Los recursos de Kubernetes de la aplicación se restauran a partir de la instantánea previa al cierre, utilizando los datos del volumen replicados después de que se cerró la aplicación de origen original.
+* La replicación se restablece en la dirección inversa.
+
+
+
+
+== Conmutación tras error de las aplicaciones al clúster de origen original
+
+Con Astra Control, puede conseguir un «retorno tras la recuperación» después de una operación de conmutación por error utilizando la siguiente secuencia de operaciones. En este flujo de trabajo para restaurar la dirección de replicación original, Astra Control replica (resincroniza) cualquier cambio de aplicación en la aplicación de origen original antes de revertir la dirección de la replicación.
+
+Este proceso se inicia desde una relación que ha completado una conmutación al nodo de respaldo a un destino e implica los siguientes pasos:
+
+* Comience con un estado de conmutación al respaldo.
+* Volver a sincronizar la relación.
+* Invierta la replicación.
+
+
+.Pasos
+. En la navegación izquierda de Astra Control, seleccione *aplicaciones*.
+. Seleccione la pestaña *Protección de datos* > *Replicación*.
+. En el menú Acciones, selecciona *Resincronizar*.
+. Para una operación de conmutación por error, seleccione la aplicación con error como origen de la operación de resincronización (conservando los datos escritos después de la conmutación por error).
+. Escriba "Resync" para confirmar.
+. Seleccione *Sí, resincronización* para finalizar.
+. Una vez finalizada la resincronización, en la ficha Protección de datos > replicación, en el menú acciones, seleccione *replicación inversa*.
+. En la página replicación inversa, revise la información y seleccione *replicación inversa*.
+
+
+.Resultado
+Esto combina los resultados de las operaciones de "resincronización" y "relación inversa" para conectar la aplicación en el clúster de origen original con la reanudación de la replicación al clúster de destino original.
+
+
+
+== Eliminar una relación de replicación de aplicaciones
+
+La eliminación de la relación da como resultado dos aplicaciones independientes sin relación entre ellas.
+
+.Pasos
+. En la navegación izquierda de Astra Control, seleccione *aplicaciones*.
+. Seleccione la pestaña *Protección de datos* > *Replicación*.
+. En el cuadro Protección de aplicaciones o en el diagrama de relaciones, seleccione *Eliminar relación de replicación*.
+
+
+.Resultado
+Las siguientes acciones ocurren como resultado de eliminar una relación de replicación:
+
+* Si se establece la relación pero la aplicación aún no se ha conectado en el clúster de destino (se ha producido un error al respecto), Astra Control conserva las RVP creadas durante la inicialización, deja una aplicación gestionada "vacía" en el clúster de destino y conserva la aplicación de destino para mantener las copias de seguridad que se hayan creado.
+* Si la aplicación se ha conectado en el clúster de destino (con errores), Astra Control conserva las RVP y las aplicaciones de destino. Las aplicaciones de origen y destino se tratan ahora como aplicaciones independientes. Las programaciones de backup permanecen en ambas aplicaciones, pero no se asocian entre sí. 
+
+
+
+
+== estado de la relación de replicación y estados del ciclo de vida de la relación
+
+Astra Control muestra el estado de la relación y los estados del ciclo de vida de la relación de replicación.
+
+
+
+=== Estados de la relación de replicación
+
+Los siguientes Estados indican el estado de la relación de replicación:
+
+* *Normal*: La relación se establece o se ha establecido, y la instantánea más reciente se ha transferido con éxito.
+* *Advertencia*: La relación está fallando o ya falló (y por lo tanto ya no protege la aplicación de origen).
+* *Crítico*
++
+** La relación se ha establecido o se ha realizado una conmutación por error, y el último intento de reconciliación ha fallado.
+** Se establece la relación y se produce un error en el último intento de reconciliar la adición de una nueva RVP.
+** Se establece la relación (por lo que una instantánea se ha replicado correctamente y es posible la recuperación tras fallos), pero la instantánea más reciente ha fallado o no se ha podido replicar.
+
+
+
+
+
+
+=== estados de ciclo de vida de replicación
+
+Los siguientes estados reflejan las diferentes etapas del ciclo de vida de la replicación:
+
+* *Establecer*: Se está creando una nueva relación de replicación. Astra Control crea un espacio de nombres en caso necesario, crea reclamaciones de volúmenes persistentes (RVP) en los nuevos volúmenes en el clúster de destino y crea relaciones con SnapMirror. Este estado también puede indicar que la replicación está resincronizada o invirtiendo la replicación.
+* *Establecido*: Existe una relación de replicación. Astra Control comprueba periódicamente que los RVP estén disponibles, comprueba la relación de replicación, crea snapshots de la aplicación periódicamente e identifica cualquier RVP de origen nuevo en la aplicación. Si es así, Astra Control crea los recursos para incluirlos en la replicación.
+* *Fallo*: Astra Control rompe las relaciones de SnapMirror y restaura los recursos de Kubernetes de la aplicación a partir de la última instantánea de la aplicación replicada con éxito.
+* *Fallo de más*: Astra Control deja de replicar desde el clúster de origen, utiliza la instantánea de la aplicación replicada más reciente (exitosa) en el destino y restaura los recursos de Kubernetes.
+* *Resyncing*: Astra Control reenvía los nuevos datos del origen de resincronización al destino de resincronización mediante SnapMirror resync. Es posible que esta operación sobrescriba algunos de los datos del destino en función de la dirección de la sincronización. Astra Control detiene la aplicación que se ejecuta en el espacio de nombres de destino y elimina la aplicación Kubernetes. Durante el proceso de resincronización, el estado muestra como "establecer".
+* *Inversión*: Es la operación planificada para mover la aplicación al clúster de destino mientras continúa la réplica al clúster de origen original. Astra Control detiene la aplicación en el clúster de origen y replica los datos en el destino antes de conmutar por error la aplicación al clúster de destino. Durante la replicación inversa, el estado aparece como "establecer".
+* *Eliminación*:
++
+** Si la relación de replicación se ha establecido pero aún no se ha realizado una conmutación por error, Astra Control elimina las RVP que se crearon durante la replicación y elimina la aplicación administrada de destino.
+** Si la replicación ya ha fallado, Astra Control conserva las EVs y la aplicación de destino.
+
+
+
