@@ -487,6 +487,18 @@ spec:
   accountName: "Example"
   *astraVersion: "[Version number]"*
 ----
+. Cambie el número de versión de Astra (`astraVersion` dentro de `spec`) de `23.07.0` para `23.10.0`:
++
+
+NOTE: No puede actualizar directamente desde una versión que tenga dos o más versiones de la versión actual. Para obtener una lista completa de las versiones lanzadas, consulte link:../release-notes/whats-new.html["notas de la versión"].
+
++
+[listing, subs="+quotes"]
+----
+spec:
+  accountName: "Example"
+  *astraVersion: "[Version number]"*
+----
 . Compruebe que la ruta del Registro de imágenes coincide con la ruta del Registro a la que ha insertado las imágenes en <<Agregue las imágenes al registro local,paso anterior>>. Actualizar `imageRegistry` dentro de `spec` si el registro ha cambiado desde la última instalación.
 +
 [listing]
